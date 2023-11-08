@@ -30,18 +30,25 @@ import shutil
 from torch.optim.adam import Adam
 from PIL import Image
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
+
 # %% [markdown]
 # For loading the Stable Diffusion using Diffusers, follow the instuctions https://huggingface.co/blog/stable_diffusion and update MY_TOKEN with your token.
 
 # %%
+torch.cuda.empty_cache()
 scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", clip_sample=False, set_alpha_to_one=False)
-MY_TOKEN = ''
+MY_TOKEN = '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'
 LOW_RESOURCE = False 
 NUM_DDIM_STEPS = 50
 GUIDANCE_SCALE = 7.5
 MAX_NUM_WORDS = 77
-device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-ldm_stable = StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4",  scheduler=scheduler).to(device)
+print(torch.cuda.device_count())
+device = torch.device('cuda:3') if torch.cuda.is_available() else torch.device('cpu')
+remote = "CompVis/stable-diffusion-v1-4"
+local = "./stable-diffusion-v1-4"
+ldm_stable = StableDiffusionPipeline.from_pretrained(remote, scheduler=scheduler).to(device)
 tokenizer = ldm_stable.tokenizer
 
 # %% [markdown]
