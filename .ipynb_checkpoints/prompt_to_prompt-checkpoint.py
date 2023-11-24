@@ -1,4 +1,23 @@
+# %% [markdown]
+# ## Copyright 2022 Google LLC. Double-click for license information.
+
 # %%
+# Copyright 2022 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# %%
+# %pip install -U transformers 
 from typing import Optional, Union, Tuple, List, Callable, Dict
 from tqdm.notebook import tqdm
 import torch
@@ -14,7 +33,8 @@ from PIL import Image
 
 import os
 os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
-
+# os.environ['TRANSFORMERS_OFFLINE'] = '1'  # 模型
+# os.environ['HF_DATASETS_OFFLINE'] = '1'  # 数据
 # %% [markdown]
 # For loading the Stable Diffusion using Diffusers, follow the instuctions https://huggingface.co/blog/stable_diffusion and update MY_TOKEN with your token.
 
@@ -22,7 +42,7 @@ os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
 torch.cuda.empty_cache()
 scheduler = DDIMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", clip_sample=False, set_alpha_to_one=False)
 MY_TOKEN = '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'
-LOW_RESOURCE = False 
+LOW_RESOURCE = False
 NUM_DDIM_STEPS = 50
 GUIDANCE_SCALE = 7.5
 MAX_NUM_WORDS = 77
@@ -30,6 +50,8 @@ print(torch.cuda.device_count())
 device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 remote = "CompVis/stable-diffusion-v1-4"
 local = "/root/stable-diffusion-v1-4"
+# ldm_stable = StableDiffusionPipeline.from_pretrained(remote, scheduler=scheduler).to(device)
+# ldm_stable.save_pretrained(local)
 ldm_stable = StableDiffusionPipeline.from_pretrained(local, scheduler=scheduler).to(device)
 tokenizer = ldm_stable.tokenizer
 
@@ -314,7 +336,7 @@ def make_controller(prompts: List[str], is_replace_controller: bool, cross_repla
     if blend_words is None:
         lb = None
     else:
-        lb = LocalBlend(prompts, blend_word)
+        lb = LocalBlend(prompts, blend_words)
     if is_replace_controller:
         controller = AttentionReplace(prompts, NUM_DDIM_STEPS, cross_replace_steps=cross_replace_steps, self_replace_steps=self_replace_steps, local_blend=lb)
     else:
@@ -341,7 +363,7 @@ def show_cross_attention(attention_store: AttentionStore, res: int, from_where: 
         images.append(image)
     ptp_utils.view_images(np.stack(images, axis=0))
     
-
+# %%
 def show_self_attention_comp(attention_store: AttentionStore, res: int, from_where: List[str],
                         max_com=10, select: int = 0):
     attention_maps = aggregate_attention(attention_store, res, from_where, False, select).numpy().reshape((res ** 2, res ** 2))
@@ -354,6 +376,14 @@ def show_self_attention_comp(attention_store: AttentionStore, res: int, from_whe
         image = np.repeat(np.expand_dims(image, axis=2), 3, axis=2).astype(np.uint8)
         image = Image.fromarray(image).resize((256, 256))
         image = np.array(image)
+        if i == 0 :
+            image = ptp_utils.text_under_image(image, "    T    ")
+        elif i == max_com - 1:
+            image = ptp_utils.text_under_image(image, "    0    ")
+        elif i == max_com - 2:
+            image = ptp_utils.text_under_image(image, "--------->")
+        else:
+            image = ptp_utils.text_under_image(image, "----------")
         images.append(image)
     ptp_utils.view_images(np.concatenate(images, axis=1))
 
@@ -616,66 +646,186 @@ def run_and_display(prompts, controller, latent=None, run_baseline=False, genera
     return images, x_t
 
 # %%
+def run_and_display_attention_replace(attentionReplaceSteps, prompts, cross_attention_word, latent=None, run_baseline=False, generator=None, uncond_embeddings=None, verbose=True, description='',folder=None):
+    for i, step in enumerate(attentionReplaceSteps):
+        controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps={"default_": 1., cross_attention_word: step},
+                                self_replace_steps=0.4)
+        temp, _ = text2image_ldm_stable(ldm_stable, prompts, controller, latent=x_t, num_inference_steps=NUM_DDIM_STEPS, guidance_scale=GUIDANCE_SCALE, generator=None, uncond_embeddings=None)
+        print(temp.shape) 
+        if i == 0:
+            images[0:2,:] = temp
+        else:
+            images[i + 1] = temp[-1]
+        print(temp[-1].shape) 
+        print(images.shape) 
+    print(images.shape) 
+    ptp_utils.view_images(images)
+
+# %%
 
 
-seed=1024
+seed=8888
 g_cpu = torch.Generator().manual_seed(seed)
+NUM_DIFFUSION_STEPS = 50
 
-import argparse
-
-# parser = argparse.ArgumentParser()
-# parser.add_argument("--description", required=True)
-# parser.add_argument("--path", required=True)
-# parser.add_argument("--self_ratio", required=False, type=float, default=0.5)
-# parser.add_argument("--blend_word", required=False, default='man')
-# args = parser.parse_args()
-
-image_path = "/root/autodl-tmp/prompt-to-prompt/example_images/boy.png"
-prompt = "A boy with blue jacket, black short hair and a black bag"
-(image_gt, image_enc), x_t, uncond_embeddings = null_inversion.invert(image_path, prompt, offsets=(0,0,200,0), verbose=True)
-
-print("Modify or remove offsets according to your image!")
-
-# %%
-prompts = [prompt]
+prompts = ["A fury squirrel eating a burger"]
 controller = AttentionStore()
-image_inv, x_t = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings, verbose=False,generator=g_cpu)
-print("showing from left to right: the ground truth image, the vq-autoencoder reconstruction, the null-text inverted image")
-ptp_utils.view_images([image_gt, image_enc, image_inv[0]],description='view')
-# show_cross_attention(controller, 16, ["up", "down"])
+images, x_t = run_and_display(prompts, controller, run_baseline=False, generator=g_cpu)
+show_cross_attention(controller, res=16, from_where=("up", "down"))
+show_self_attention_comp(controller, res=16, from_where=("up", "down"))
+# %%
+# replacement edit
+prompts = ["A painting of a squirrel eating a burger",
+           "A painting of a lion eating a burger"]
 
+controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, self_replace_steps=0.4)
+# run_baseline为True，对比使用p2p和不使用p2p的编辑结果
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=True)
 
 # %%
-blend_word = "boy"
-self_ratio = 0.5
+# 修改指定单词的cross-attention注入的步数
+prompts = ["A painting of a squirrel eating a burger",
+           "A painting of a lion eating a burger",
+           "A painting of a dear eating a burger",
+           "A painting of a dog eating a burger",
+           "A painting of a cat eating a burger"]
+cross_attention_words = ["lion", "dear", "dog", "cat"]
+# 注入原图的attention的步数的占比
+attentionReplaceSteps = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
+images = np.zeros((1 + len(attentionReplaceSteps), 512, 512, 3))
+for i, _ in enumerate(prompts, start=1):
+    cur_prompt = [prompts[0],prompts[i]]
+    print(cur_prompt)
+    print(cross_attention_words[i - 1])
+    run_and_display_attention_replace(attentionReplaceSteps, cur_prompt, cross_attention_words[i - 1], latent=x_t, run_baseline=False, generator=g_cpu)
 
-# styles = ["American comics", "Japanese anime","caricature drawing", "kawaii", "cartoon",\
-#     "South Park", "Rick and Morty cartoon", "Simpsons", "Pokemon",  "Naruto", "Marvel comics", "The Powerpuff Girls cartoon",\
-#          "Picasso", "Dali", "Van Gogh drawing", "Monet", \
-#              "impressionism", "expressionism", "surrealism", "watercolor", "acrylic", "sketch", "modern art","abstract art"]
-# styles = ["caricature drawing", "impressionism", "expressionism", "sketch"]
-styles = ["chinese style","Whimsy Doodles" ,"Zany Toons", "Chibi Champs", "Retro Sketchies", "Manga Mates", "Graffiti Giggles", "Fantasy Fables", "Pixel Pals", "Pop Art Puppets", "Cartoon Couture"]
-for style in styles:
-    words = style.split()  # 将 style 拆分为单词列表
-    if len(words) > 1:  # 如果 style 包含多个单词
-        prompts = [prompt, prompt + ", in " + style + " style, extra high quality and pleasing"]
-        # prompts = [prompt, prompt + ", " + style + " style portrait, extra high quality and pleasing"]
-        eq_params = {"words": tuple(words + ['style']), "values": tuple([3] * (len(words) + 1))}  # 将 words 列表转换为元组，并为所有单词赋值 3
-    else:  # 如果 style 仅包含一个单词
-        prompts = [prompt, prompt + ", in " + style + " style, extra high quality and pleasing"]
-        # prompts = [prompt, prompt + ", " + style + " style portrait, extra high quality and pleasing"]
-        eq_params = {"words": (style, 'style', ), "values": (3,3,)} 
+# %%
+# 构造mask进行局部编辑
+prompts = ["A painting of a squirrel eating a burger",
+           "A painting of a lion eating a burger"]
+lb = LocalBlend(prompts, ("squirrel", "lion"))
+controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS,
+                              cross_replace_steps={"default_": 1., "lion": .4},
+                              self_replace_steps=0.4, local_blend=lb)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
 
-    cross_replace_steps = {'default_': .8, }
-    self_replace_steps = self_ratio
-    if blend_word=='':
-        blend_word=None
-    else:
-        blend_word = (((blend_word,), (blend_word,)))
+# %%
+# 对比使用了局部编辑后的p2p和baseline
+prompts = ["A painting of a squirrel eating a burger",
+           "A painting of a squirrel eating a lasagne"]
+lb = LocalBlend(prompts, ("burger", "lasagne"))
+controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS,
+                              cross_replace_steps={"default_": 1., "lasagne": .2},
+                              self_replace_steps=0.4,
+                              local_blend=lb)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=True)
+# %%
+# refinement edit
+prompts = ["A painting of a squirrel eating a burger",
+           "A neoclassical painting of a squirrel eating a burger"]
+
+controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS,
+                             cross_replace_steps=.5, 
+                             self_replace_steps=.2)
+_ = run_and_display(prompts, controller, latent=x_t)
+# %%
+# refinement edit
+prompts = ["a photo of a house on a mountain",
+           "a photo of a house on a mountain at night",
+           "a photo of a house on a mountain at spring",
+           "a photo of a house on a mountain at fall",
+           "a photo of a house on a mountain at winter"]
 
 
-    controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
-    images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,description=image_path.split('/')[-1]+' ' + style,folder=image_path.split('/')[-1])
-    blend_word = "boy"
+controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                             self_replace_steps=.4)
+_ = run_and_display(prompts, controller, latent=x_t)
+# %%
+prompts = ["soup",
+           "pea soup"] 
 
+lb = LocalBlend(prompts, ("soup", "soup"))
+
+controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                             self_replace_steps=.4,
+                             local_blend=lb)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
+# %%
+# attention reweight
+prompts = ["a smiling bunny doll"] * 2
+
+### pay 3 times more attention to the word "smiling"
+equalizer = get_equalizer(prompts[1], ("smiling",), (5,))
+controller = AttentionReweight(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                               self_replace_steps=.4,
+                               equalizer=equalizer)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
+# %%
+# attention reweight
+prompts = ["pink bear riding a bicycle"] * 2
+
+### we don't wont pink bikes, only pink bear.
+### we reduce the amount of pink but apply it locally on the bikes (attention re-weight + local mask )
+
+### pay less attention to the word "pink"
+equalizer = get_equalizer(prompts[1], ("pink",), (-1,))
+
+### apply the edit on the bikes 
+lb = LocalBlend(prompts, ("bicycle", "bicycle"))
+controller = AttentionReweight(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                               self_replace_steps=.4,
+                               equalizer=equalizer,
+                               local_blend=lb)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
+
+# %%
+# attention refine和attention reweight可以嵌套使用
+# 有时attention refine 的prompt中的某个要求生成的物体被忽略了，可以用attention reweight加强模型对它的注意力
+# 比如：只使用attentionRefine，模型忽略了prompt中的croutons
+prompts = ["soup",
+           "pea soup with croutons"] 
+lb = LocalBlend(prompts, ("soup", "soup"))
+controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                             self_replace_steps=.4, local_blend=lb)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
+
+# %%
+# 使用attention reweight加强对croutons的注意力后，生成图片中的croutons更明显了
+prompts = ["soup",
+           "pea soup with croutons"] 
+
+
+lb = LocalBlend(prompts, ("soup", "soup"))
+controller_a = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, 
+                               self_replace_steps=.4, local_blend=lb)
+
+### pay 3 times more attention to the word "croutons"
+equalizer = get_equalizer(prompts[1], ("croutons",), (3,))
+controller = AttentionReweight(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                               self_replace_steps=.4, equalizer=equalizer, local_blend=lb,
+                               controller=controller_a)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
+
+# %%
+# 相同的例子，attention refine和attention reweight叠加使用
+prompts = ["potatos",
+           "fried potatos"] 
+lb = LocalBlend(prompts, ("potatos", "potatos"))
+controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                             self_replace_steps=.4, local_blend=lb)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
+
+# 加强对 fired的注意力
+prompts = ["potatos",
+           "fried potatos"] 
+lb = LocalBlend(prompts, ("potatos", "potatos"))
+controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, 
+                             self_replace_steps=.4, local_blend=lb)
+
+### pay 10 times more attention to the word "fried"
+equalizer = get_equalizer(prompts[1], ("fried",), (10,))
+controller = AttentionReweight(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                               self_replace_steps=.4, equalizer=equalizer, local_blend=lb,
+                               controller=controller_a)
+_ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
 # %%

@@ -22,8 +22,10 @@ LOW_RESOURCE = False
 NUM_DDIM_STEPS = 50
 GUIDANCE_SCALE = 7.5
 MAX_NUM_WORDS = 77
-device = torch.device('cuda:3') if torch.cuda.is_available() else torch.device('cpu')
-ldm_stable = StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4",  scheduler=scheduler).to(device)
+device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
+remote = "CompVis/stable-diffusion-v1-4"
+local = "/root/stable-diffusion-v1-4"
+ldm_stable = StableDiffusionPipeline.from_pretrained(local, scheduler=scheduler).to(device)
 tokenizer = ldm_stable.tokenizer
 
 # %% [markdown]
@@ -615,52 +617,165 @@ seed=1024
 g_cpu = torch.Generator().manual_seed(seed)
 import argparse
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--self_ratio", required=False, type=float, default=0.5)
-args = parser.parse_args()
+self_ratio = 0.5
+torch.cuda.empty_cache()
+image_path = "./example_images/BITgate2.jpg"
+prompt = "A white university building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky."
 
-image_path = "./example_images/face_junyi.jpg"
-prompt = "Indoors, a man wearing pink clothes, black glasses and champagne-colored headphones"
+# null-text inversion,将输入的图片和prompt进行inversion，得到图片对应的噪声和可以引导这个噪声重建图片的无条件embeding
 (image_gt, image_enc), x_t, uncond_embeddings = null_inversion.invert(image_path, prompt, offsets=(0,0,200,0), verbose=True)
 
 print("Modify or remove offsets according to your image!")
 
 # %%
-prompts = [prompt]
+# 将null-text inversion得到的噪声和无条件embeding输入stable-diffusion中，得到重建图片的结果。
+# 从左到右依次是ground-truth，vqae的重建结果，和我们使用的null-text inversion的重建结果
+prompts = [prompt,prompt]
 controller = AttentionStore()
-image_inv, x_t = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings, verbose=False,generator=g_cpu)
+image_inv, x_t = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings, verbose=False,generator=g_cpu) 
 print("showing from left to right: the ground truth image, the vq-autoencoder reconstruction, the null-text inverted image")
 ptp_utils.view_images([image_gt, image_enc, image_inv[0]],description='view')
 # show_cross_attention(controller, 16, ["up", "down"])
 
+# 接下来是使用修改后的prompt以及inversion得到的噪声和无条件embeding对输入的图片进行修改
+# %%
+# 全局编辑，风格迁移.将主楼后面的背景换成银河系
+prompts = ["A white university building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky.",
+        "A white university building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky,and Milky Way behind it"
+       ]
+
+cross_replace_steps = {'default_': 0.8}
+self_replace_steps = self_ratio
+
+blend_word = None
+# blend_word = ((('building',), ("building",))) # for local edit
+eq_params = {"words": ("Milky","Way"), "values": (5,5)}  
+# eq_params = None
+controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
 
 # %%
-prompts = ["Indoors, a man wearing pink clothes, black glasses and champagne-colored headphones",
-           "Indoors, a man wearing pink clothes, black glasses and champagne-colored headphones, in cartoon style, extra high quality and pleasing"
+# 局部编辑，使用原prompt和新prompt的对应位置的token构造一个mask，将北理工的主楼改成一个城堡
+prompts = ["A white university building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky.",
+        "A old castle with a red signboard in front that says Beijing Institute of Technology under a cloudy sky."
+       ]
+
+cross_replace_steps = {'default_': .8}
+self_replace_steps = self_ratio
+
+# blend_word = None
+blend_word = ((('building',), ("castle",))) # for local edit
+eq_params = {"words": ("castle"), "values": (2,)}  
+# eq_params = None
+controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
+
+# %%
+# 局部编辑，将北理工主楼的风格改成中国风
+prompts = ["A white university building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky.",
+        "A Chinese style building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky."
+       ]
+
+cross_replace_steps = {'default_': .8}
+self_replace_steps = self_ratio
+
+# blend_word = None
+blend_word = ((('building',), ("building",))) # for local edit
+eq_params = {"words": ("Chinese", "style"), "values": (2,2)}  
+# eq_params = None
+controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
+
+# %%
+# 控制prompt中某个单词对生成图片的影响程度。修改原prompt中的cloudy对应的attention map注入的权重，从而控制新的图片中云的数量。
+# 从左到右cloudy的权重分别是2,5,10,20
+prompts = ["A white university building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky.",
+        "A white university building with a red signboard in front that says Beijing Institute of Technology under a cloudy sky"
+       ]
+lb = LocalBlend(prompts, ("sky", "sky"))
+attention_weight = [2, 5, 10, 20]
+display_imgs = np.zeros((1 + len(attention_weight), 512, 512, 3))
+for i, att in enumerate(attention_weight):
+    equalizer = get_equalizer(prompts[1], ("cloudy",), (att,))
+    controller = AttentionReweight(prompts, 50, cross_replace_steps=.8,
+                                self_replace_steps=.4,
+                                equalizer=equalizer)
+    images,_ = run_and_display(prompts, controller, latent=x_t, uncond_embeddings=uncond_embeddings, generator=g_cpu,verbose=False, run_baseline=False)
+    if i == 0: display_imgs[0:2,:] = images
+    else: display_imgs[i + 1] = images[-1]
+ptp_utils.view_images(display_imgs)
+# %%
+# %%
+prompts = ["A man wearing a black shirt and suspenders with a spinning basketball on his fingers",
+        "A man wearing a black shirt and suspenders with a bright flame on his fingers"
+       ]
+
+cross_replace_steps = {'default_': .4}
+self_replace_steps = self_ratio
+
+# blend_word = None
+blend_word = ((('basketball',), ("flame",))) # for local edit
+eq_params = {"words": ("bright", "flame"), "values": (20,20)}  
+# eq_params = None
+controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
+
+
+
+# %%
+prompts = ["A man wearing a black shirt and suspenders with a spinning basketball on his fingers",
+        "A long hair woman wearing a black shirt and suspenders with a spinning basketball on his fingers"
+       ]
+
+cross_replace_steps = {'default_': .4}
+self_replace_steps = self_ratio
+
+# blend_word = None
+blend_word = ((('man',), ("woman",))) # for local edit
+eq_params = {"words": ("woman", "long", "hair"), "values": (2,20,2)}  
+# eq_params = None
+controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
+
+# %%
+
+prompts = ["A boy with blue jacket, black short hair ,a black bag and excited expression",
+            "A boy with blue jacket, black long bangs,a black bag and excited expression"
         ]
 
-cross_replace_steps = {'default_': .8, }
-self_replace_steps = args.self_ratio
+cross_replace_steps = {'default_': .2, }
 
-blend_word = ((('man',), ("man",))) # for local edit
-eq_params = {"words": ("cartoon", 'style', ), "values": (2,2,)}  # amplify attention to the words "silver" and "sculpture" by *2 
+blend_word = ((('hair',), ("bangs",)))
+eq_params = {"words": ("long", "bangs"), "values": (20, 100)}  # amplify attention to the words "silver" and "sculpture" by *2 
  
 controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
-images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,description='cartoon',folder=image_path.split('/')[-1])
-
-
-
-prompts = ["Indoors, a man wearing pink clothes, black glasses and champagne-colored headphones",
-           "Indoors, a man wearing pink clothes, sunglasses and champagne-colored headphones, in cartoon style, extra high quality and pleasing"
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
+# %%
+prompts = ["A boy with blue jacket, black short hair ,a black bag and excited expression",
+            "A boy with blue jacket,black glasses,black short hair,a black bag and excited expression"
         ]
 
 cross_replace_steps = {'default_': .8, }
 
 blend_word = None
-eq_params = {"words": ("cartoon", 'style','sunglasses' ), "values": (2,2,2)}  # amplify attention to the words "silver" and "sculpture" by *2 
+eq_params = {"words": ("glasses"), "values": (10,)}  # amplify attention to the words "silver" and "sculpture" by *2 
  
 controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
-images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,description='sunglasses',folder=image_path.split('/')[-1])
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
+# %%
+prompts = ["A boy with blue jacket, black short hair ,a black bag and excited expression",
+            "A boy with blue jacket,black short hair,a black bag,a white baseball hat and excited expression"
+        ]
+
+cross_replace_steps = {'default_': .8, }
+
+# blend_word = ((('hair',), ("hair",)))
+blend_word = None
+eq_params = {"words": ("white","baseball", "hat"), "values": (25,5,5)}  # amplify attention to the words "silver" and "sculpture" by *2 
+ 
+controller = make_controller(prompts, False, cross_replace_steps, self_replace_steps, blend_word, eq_params)
+images, _ = run_and_display(prompts, controller, run_baseline=False, latent=x_t, uncond_embeddings=uncond_embeddings,generator=g_cpu,folder=image_path.split('/')[-1])
+
 # %%
 prompts = ["Indoors, a man wearing pink clothes, black glasses and champagne-colored headphones",
            "Indoors, a long hair man wearing pink clothes, black glasses and champagne-colored headphones, in cartoon style, extra high quality and pleasing"

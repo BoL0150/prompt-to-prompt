@@ -1,22 +1,5 @@
-# %% [markdown]
-# ## Copyright 2022 Google LLC. Double-click for license information.
-
 # %%
-# Copyright 2022 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# %%
+# %pip install -U transformers 
 from typing import Optional, Union, Tuple, List, Callable, Dict
 from tqdm.notebook import tqdm
 import torch
@@ -46,9 +29,9 @@ NUM_DDIM_STEPS = 50
 GUIDANCE_SCALE = 7.5
 MAX_NUM_WORDS = 77
 print(torch.cuda.device_count())
-device = torch.device('cuda:1') if torch.cuda.is_available() else torch.device('cpu')
+device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 remote = "CompVis/stable-diffusion-v1-4"
-local = "/home/libo/stable-diffusion-v1-4"
+local = "/root/stable-diffusion-v1-4"
 # ldm_stable = StableDiffusionPipeline.from_pretrained(remote, scheduler=scheduler).to(device)
 # ldm_stable.save_pretrained(local)
 ldm_stable = StableDiffusionPipeline.from_pretrained(local, scheduler=scheduler).to(device)
@@ -730,8 +713,9 @@ _ = run_and_display(prompts, controller, latent=x_t)
 # %%
 # refinement edit
 prompts = ["a photo of a house on a mountain",
-           "a photo of a house on a mountain at night",
-           "a photo of a house on a mountain at spring",
+          "a painting of a house on a mountain",
+          "a impressionist painting of a house on a mountain",
+          "a expressionist painting of a house on a mountain",
            "a photo of a house on a mountain at fall",
            "a photo of a house on a mountain at winter"]
 
@@ -741,7 +725,10 @@ controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.
 _ = run_and_display(prompts, controller, latent=x_t)
 # %%
 prompts = ["soup",
-           "pea soup"] 
+           "pea soup",
+           "tomato soup",
+           "human soup"
+           ] 
 
 lb = LocalBlend(prompts, ("soup", "soup"))
 
@@ -754,7 +741,7 @@ _ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
 prompts = ["a smiling bunny doll"] * 2
 
 ### pay 3 times more attention to the word "smiling"
-equalizer = get_equalizer(prompts[1], ("smiling",), (5,))
+equalizer = get_equalizer(prompts[1], ("smiling",), (10,))
 controller = AttentionReweight(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
                                self_replace_steps=.4,
                                equalizer=equalizer)
@@ -822,9 +809,9 @@ controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.
                              self_replace_steps=.4, local_blend=lb)
 
 ### pay 10 times more attention to the word "fried"
-equalizer = get_equalizer(prompts[1], ("fried",), (10,))
+equalizer = get_equalizer(prompts[1], ("fried",), (5,))
 controller = AttentionReweight(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
-                               self_replace_steps=.4, equalizer=equalizer, local_blend=lb,
-                               controller=controller_a)
+                               self_replace_steps=.4, equalizer=equalizer, local_blend=lb)
 _ = run_and_display(prompts, controller, latent=x_t, run_baseline=False)
+# %%
 # %%
